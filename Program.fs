@@ -6,12 +6,15 @@ open System.Threading.Tasks
 open Spectre.Console
 open SpectreCoff
 
+type ProcessingResult =
+    | NoFilesDetected of string
+    | FinishedSuccessfully of string * string
 
 type Model =
     | WaitingForSourceFolder of string
     | WaitingForTargetFolder of string * string
-    | Processing of string * string
-    | FinishedProcessing of string * string
+    | Processing of string * string * string list * string list
+    | FinishedProcessing of ProcessingResult
     | Exit
 
 module Model =
@@ -21,40 +24,45 @@ type Input =
     | Character of Char
     | Backspace
     | Enter
+    | Other
 
 type Msg =
-    | NoOp
+    | Start
     | InputReceived of Input
     | ClearInputReceived
     | FolderPathValidated of Result<string, string>
-    | ImageProcessingCompleted
+    | SourceFileNamesReceived of string list
 
 type Command =
     | DoNothing
-    | Wait of milliseconds: int
+    | WaitAndClearTheInput of milliseconds: int
     | ReadInput
     | ValidateFolderPath of path: string
+    | GetAllSourceFileNames of folderPath: string
+    | ProcessImage of path: string
 
 module Command =
     let toTask cmd =
         task {
             match cmd with
             | DoNothing ->
-                return NoOp
+                return Start
 
-            | Wait millis ->
+            | WaitAndClearTheInput millis ->
                 do! Task.Delay(millis)
                 return ClearInputReceived
 
             | ReadInput ->
                 let keyInfo = Console.ReadKey(true)
 
-                return
+                let input =
                     match keyInfo.Key with
-                    | _ when not (Char.IsControl keyInfo.KeyChar) -> InputReceived (Character keyInfo.KeyChar)
-                    | ConsoleKey.Backspace -> InputReceived Backspace
-                    | ConsoleKey.Enter -> InputReceived Enter
-                    | _ -> NoOp
+                    | _ when not (Char.IsControl keyInfo.KeyChar) -> Character keyInfo.KeyChar
+                    | ConsoleKey.Backspace -> Backspace
+                    | ConsoleKey.Enter -> Enter
+                    | _ -> Other
+
+                return InputReceived input
 
             | ValidateFolderPath path ->
                 return
@@ -62,29 +70,38 @@ module Command =
                         FolderPathValidated (Ok (DirectoryInfo(path).FullName))
                     else
                         FolderPathValidated (Error "Invalid folder path")
+
+            | GetAllSourceFileNames folderPath ->
+                return Directory.GetFiles(folderPath, "*.jpg") |> Array.toList |> SourceFileNamesReceived
         }
 
 let init = (Model.init, DoNothing)
 
 let update model msg =
     match model, msg with
-    | WaitingForSourceFolder _, NoOp -> model, ReadInput
+    | WaitingForSourceFolder _, Start -> model, ReadInput
     | WaitingForSourceFolder input, InputReceived (Character c) -> WaitingForSourceFolder (input + c.ToString()), ReadInput
     | WaitingForSourceFolder input, InputReceived Backspace -> WaitingForSourceFolder input[0 .. max -1 (input.Length - 2)], ReadInput
     | WaitingForSourceFolder input, InputReceived Enter -> WaitingForSourceFolder input, ValidateFolderPath input
     | WaitingForSourceFolder _, ClearInputReceived -> WaitingForSourceFolder "", ReadInput
-    | WaitingForSourceFolder _, FolderPathValidated (Error error) -> WaitingForSourceFolder error, Wait 2000
+    | WaitingForSourceFolder _, FolderPathValidated (Error error) -> WaitingForSourceFolder error, WaitAndClearTheInput 2000
     | WaitingForSourceFolder _, FolderPathValidated (Ok path) -> WaitingForTargetFolder (path, String.Empty), DoNothing
 
-    | WaitingForTargetFolder _, NoOp -> model, ReadInput
+    | WaitingForTargetFolder _, Start -> model, ReadInput
     | WaitingForTargetFolder (source, input), InputReceived (Character c) -> WaitingForTargetFolder (source, input + c.ToString()), ReadInput
     | WaitingForTargetFolder (source, input), InputReceived Backspace -> WaitingForTargetFolder (source, input[0 .. max -1 (input.Length - 2)]), ReadInput
     | WaitingForTargetFolder (source, input), InputReceived Enter -> WaitingForTargetFolder (source, input), ValidateFolderPath input
     | WaitingForTargetFolder (source, _), ClearInputReceived -> WaitingForTargetFolder (source, ""), ReadInput
-    | WaitingForTargetFolder (source, _), FolderPathValidated (Error error) -> WaitingForTargetFolder (source, error), Wait 2000
-    | WaitingForTargetFolder (source, _), FolderPathValidated (Ok path) -> Processing (source, path), DoNothing
+    | WaitingForTargetFolder (source, _), FolderPathValidated (Error error) -> WaitingForTargetFolder (source, error), WaitAndClearTheInput 2000
+    | WaitingForTargetFolder (source, _), FolderPathValidated (Ok path) -> Processing (source, path, [], []), DoNothing
 
-    
+    | Processing (source, _, [], []), Start -> model, GetAllSourceFileNames source
+    | Processing (source, _, [], []), SourceFileNamesReceived [] -> FinishedProcessing (NoFilesDetected source), DoNothing
+    | Processing (source, target, [], []), SourceFileNamesReceived (firstToProcess::others)
+        -> Processing (source, target, (firstToProcess::others), []), ProcessImage firstToProcess
+
+    | FinishedProcessing _, Start -> model, ReadInput
+    | FinishedProcessing _, InputReceived _ -> Exit, DoNothing
 
     | _ -> model, DoNothing
 
@@ -114,15 +131,27 @@ let view model =
             Calm "Current input:"
             Vanilla input
 
-        | Processing (source, target) ->
+        | Processing (_, _, [], _) -> ()
+
+        | Processing (source, target, inProgressImage::unprocessedImages, _) ->
             Calm $"Processing images from: {source}"
             NextLine
             Calm $"Saving to: {target}"
             BlankLine
             alignedRule Alignment.Left "Status"
-            Pumped "Processing..."
 
-        | FinishedProcessing (source, target) ->
+            Table.table
+                [ Column.column (Pumped "Filename") ]
+                (Payloads [ Vanilla inProgressImage ] :: List.map (Vanilla >> List.singleton >> Payloads) unprocessedImages)
+            |> Table.withCaption "Processing"
+            |> toOutputPayload
+
+        | FinishedProcessing (NoFilesDetected source) ->
+            Calm $"No .jpg files detected in {source}"
+            BlankLine
+            Calm "Press any key to exit"
+
+        | FinishedProcessing (FinishedSuccessfully (source, target)) ->
             Calm $"Images processed from: {source}"
             NextLine
             Calm $"Saved to: {target}"
@@ -139,15 +168,18 @@ let view model =
 
 let run (ctx: LiveDisplayContext) =
     task {
+        let mutable prevModel = None
         let mutable state = init
 
         while fst state <> Exit do
             let model, command = state
 
-            ctx.UpdateTarget(view model)
+            if prevModel <> Some model then
+                ctx.UpdateTarget(view model)
 
             let! msg = Command.toTask command
 
+            prevModel <- Some model
             state <- update model msg
 
             ()
