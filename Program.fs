@@ -6,6 +6,7 @@ open System.Threading.Tasks
 open Spectre.Console
 open SpectreCoff
 
+
 type ProcessingResult =
     | NoFilesDetected of sourceFolder: string
     | FinishedSuccessfully of sourceFolder: string * targetFolder: string * processedCount: int
