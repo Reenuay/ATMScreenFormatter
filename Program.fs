@@ -32,7 +32,7 @@ type Msg =
     | InputReceived of Input
     | ClearInputReceived
     | FolderPathValidated of Result<string, string>
-    | TargetFoldersCreated
+    | TargetSubfoldersCreated
     | SourceFilenamesReceived of filenames: string list
     | ImageProcessed
 
@@ -41,7 +41,7 @@ type Command =
     | WaitAndClearTheInput of milliseconds: int
     | ReadInput
     | ValidateFolderPath of path: string
-    | CreateFoldersForEachTargetSize of targetFolder: string
+    | CreateSubfoldersForEachTargetSize of targetFolder: string
     | GetAllSourceFileNames of sourceFolder: string
     | ProcessImage of sourceFolder: string * targetFolder: string * filename: string
 
@@ -81,7 +81,7 @@ module Command =
                     else
                         FolderPathValidated (Error "Invalid folder path")
 
-            | CreateFoldersForEachTargetSize targetFolder ->
+            | CreateSubfoldersForEachTargetSize targetFolder ->
                 targetSizes
                 |> List.iter (fun (targetWidth, targetHeight) ->
                     let targetPerSizeFolder = Path.Combine(targetFolder, $"{targetWidth}x{targetHeight}")
@@ -89,10 +89,15 @@ module Command =
                         Directory.CreateDirectory(targetPerSizeFolder) |> ignore
                 )
 
-                return TargetFoldersCreated
+                return TargetSubfoldersCreated
 
             | GetAllSourceFileNames folderPath ->
-                return Directory.GetFiles(folderPath, "*.jpg") |> Array.toList |> List.map Path.GetFileName |> SourceFilenamesReceived
+                return
+                    Directory.GetFiles(folderPath, "*.jpg")
+                    |> Array.toList
+                    |> List.filter (fun f -> ImageProcessing.getFileDimensions f = (1024, 768))
+                    |> List.map Path.GetFileName
+                    |> SourceFilenamesReceived
 
             | ProcessImage (sourceFolder, targetFolder, filename) ->
                 targetSizes
@@ -126,8 +131,8 @@ let update model msg =
     | WaitingForTargetFolder (source, _), FolderPathValidated (Error error) -> WaitingForTargetFolder (source, error), WaitAndClearTheInput 2000
     | WaitingForTargetFolder (source, _), FolderPathValidated (Ok path) -> Processing (source, path, [], 0), DoNothing
 
-    | Processing (_, target, [], 0), Start -> model, CreateFoldersForEachTargetSize target
-    | Processing (source, _, [], 0), TargetFoldersCreated -> model, GetAllSourceFileNames source
+    | Processing (_, target, [], 0), Start -> model, CreateSubfoldersForEachTargetSize target
+    | Processing (source, _, [], 0), TargetSubfoldersCreated -> model, GetAllSourceFileNames source
     | Processing (source, _, [], 0), SourceFilenamesReceived [] -> FinishedProcessing (NoFilesDetected source), DoNothing
     | Processing (source, target, [], 0), SourceFilenamesReceived (current::next) ->
         Processing (source, target, current::next, List.length next + 1), ProcessImage (source, target, current)
