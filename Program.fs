@@ -8,12 +8,12 @@ open SpectreCoff
 
 type ProcessingResult =
     | NoFilesDetected of sourceFolder: string
-    | FinishedSuccessfully of sourceFolder: string * targetFolder: string
+    | FinishedSuccessfully of sourceFolder: string * targetFolder: string * processedCount: int
 
 type Model =
     | WaitingForSourceFolder of input: string
     | WaitingForTargetFolder of sourceFolder: string * input: string
-    | Processing of sourceFolder: string * targetFolder: string * unprocessedImages: string list * processedImages: string list
+    | Processing of sourceFolder: string * targetFolder: string * images: string list * totalCount: int
     | FinishedProcessing of ProcessingResult
     | Exit
 
@@ -123,16 +123,17 @@ let update model msg =
     | WaitingForTargetFolder (source, input), InputReceived Enter -> WaitingForTargetFolder (source, input), ValidateFolderPath input
     | WaitingForTargetFolder (source, _), ClearInputReceived -> WaitingForTargetFolder (source, ""), ReadInput
     | WaitingForTargetFolder (source, _), FolderPathValidated (Error error) -> WaitingForTargetFolder (source, error), WaitAndClearTheInput 2000
-    | WaitingForTargetFolder (source, _), FolderPathValidated (Ok path) -> Processing (source, path, [], []), DoNothing
+    | WaitingForTargetFolder (source, _), FolderPathValidated (Ok path) -> Processing (source, path, [], 0), DoNothing
 
-    | Processing (_, target, [], []), Start -> model, CreateFoldersForEachTargetSize target
-    | Processing (source, _, [], []), TargetFoldersCreated -> model, GetAllSourceFileNames source
-    | Processing (source, _, [], []), SourceFilenamesReceived [] -> FinishedProcessing (NoFilesDetected source), DoNothing
-    | Processing (source, target, [], []), SourceFilenamesReceived (firstToProcess::others) ->
-        Processing (source, target, (firstToProcess::others), []), ProcessImage (source, target, firstToProcess)
-    | Processing (source, target, finished::next::others, processed), ImageProcessed ->
-        Processing (source, target, next::others, finished::processed), ProcessImage (source, target, next)
-    | Processing (source, target, _::[], _), ImageProcessed -> FinishedProcessing (FinishedSuccessfully (source, target)), DoNothing
+    | Processing (_, target, [], 0), Start -> model, CreateFoldersForEachTargetSize target
+    | Processing (source, _, [], 0), TargetFoldersCreated -> model, GetAllSourceFileNames source
+    | Processing (source, _, [], 0), SourceFilenamesReceived [] -> FinishedProcessing (NoFilesDetected source), DoNothing
+    | Processing (source, target, [], 0), SourceFilenamesReceived (current::next) ->
+        Processing (source, target, current::next, List.length next + 1), ProcessImage (source, target, current)
+    | Processing (source, target, _::current::next, totalCount), ImageProcessed ->
+        Processing (source, target, current::next, totalCount), ProcessImage (source, target, current)
+    | Processing (source, target, _::[], totalCount), ImageProcessed ->
+        FinishedProcessing (FinishedSuccessfully (source, target, totalCount)), DoNothing
 
     | FinishedProcessing _, Start -> model, ReadInput
     | FinishedProcessing _, InputReceived _ -> Exit, DoNothing
@@ -167,28 +168,27 @@ let view model =
 
         | Processing (_, _, [], _) -> ()
 
-        | Processing (source, target, inProgressImage::unprocessedImages, _) ->
+        | Processing (source, target, current::next, totalCount) ->
             Calm $"Processing images from: {source}"
             NextLine
             Calm $"Saving to: {target}"
             BlankLine
             alignedRule Alignment.Left "Status"
-
-            Table.table
-                [ Column.column (Pumped "Filename") ]
-                (Payloads [ Vanilla inProgressImage ] :: List.map (Vanilla >> List.singleton >> Payloads) unprocessedImages)
-            |> Table.withCaption "Processing"
-            |> toOutputPayload
+            Calm $"Processing {current}"
+            NextLine
+            Edgy $"Progress: {totalCount - List.length next - 1}/{totalCount}"
 
         | FinishedProcessing (NoFilesDetected source) ->
             Calm $"No .jpg files detected in {source}"
             BlankLine
             Calm "Press any key to exit"
 
-        | FinishedProcessing (FinishedSuccessfully (source, target)) ->
+        | FinishedProcessing (FinishedSuccessfully (source, target, processedCount)) ->
             Calm $"Images processed from: {source}"
             NextLine
             Calm $"Saved to: {target}"
+            NextLine
+            Calm $"Total files processed: {processedCount}"
             BlankLine
             alignedRule Alignment.Left "Success"
             Pumped "Done!"
