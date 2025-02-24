@@ -7,13 +7,13 @@ open Spectre.Console
 open SpectreCoff
 
 type ProcessingResult =
-    | NoFilesDetected of string
-    | FinishedSuccessfully of string * string
+    | NoFilesDetected of sourceFolder: string
+    | FinishedSuccessfully of sourceFolder: string * targetFolder: string
 
 type Model =
-    | WaitingForSourceFolder of string
-    | WaitingForTargetFolder of string * string
-    | Processing of string * string * string list * string list
+    | WaitingForSourceFolder of input: string
+    | WaitingForTargetFolder of sourceFolder: string * input: string
+    | Processing of sourceFolder: string * targetFolder: string * unprocessedImages: string list * processedImages: string list
     | FinishedProcessing of ProcessingResult
     | Exit
 
@@ -31,17 +31,26 @@ type Msg =
     | InputReceived of Input
     | ClearInputReceived
     | FolderPathValidated of Result<string, string>
-    | SourceFileNamesReceived of string list
+    | TargetFoldersCreated
+    | SourceFilenamesReceived of filenames: string list
+    | ImageProcessed
 
 type Command =
     | DoNothing
     | WaitAndClearTheInput of milliseconds: int
     | ReadInput
     | ValidateFolderPath of path: string
-    | GetAllSourceFileNames of folderPath: string
-    | ProcessImage of path: string
+    | CreateFoldersForEachTargetSize of targetFolder: string
+    | GetAllSourceFileNames of sourceFolder: string
+    | ProcessImage of sourceFolder: string * targetFolder: string * filename: string
 
 module Command =
+    let targetSizes =
+        [
+            (1024, 1280)
+            (1280, 1024)
+        ]
+
     let toTask cmd =
         task {
             match cmd with
@@ -71,8 +80,29 @@ module Command =
                     else
                         FolderPathValidated (Error "Invalid folder path")
 
+            | CreateFoldersForEachTargetSize targetFolder ->
+                targetSizes
+                |> List.iter (fun (targetWidth, targetHeight) ->
+                    let targetPerSizeFolder = Path.Combine(targetFolder, $"{targetWidth}x{targetHeight}")
+                    if not <| Directory.Exists targetPerSizeFolder then
+                        Directory.CreateDirectory(targetPerSizeFolder) |> ignore
+                )
+
+                return TargetFoldersCreated
+
             | GetAllSourceFileNames folderPath ->
-                return Directory.GetFiles(folderPath, "*.jpg") |> Array.toList |> SourceFileNamesReceived
+                return Directory.GetFiles(folderPath, "*.jpg") |> Array.toList |> List.map Path.GetFileName |> SourceFilenamesReceived
+
+            | ProcessImage (sourceFolder, targetFolder, filename) ->
+                targetSizes
+                |> List.iter (fun (targetWidth, targetHeight) ->
+                    let sourceFilename = Path.Combine(sourceFolder, filename)
+                    let targetFilename = Path.Combine(targetFolder, $"{targetWidth}x{targetHeight}", filename)
+
+                    ImageProcessing.processImage targetWidth targetHeight sourceFilename targetFilename
+                )
+
+                return ImageProcessed
         }
 
 let init = (Model.init, DoNothing)
@@ -95,10 +125,14 @@ let update model msg =
     | WaitingForTargetFolder (source, _), FolderPathValidated (Error error) -> WaitingForTargetFolder (source, error), WaitAndClearTheInput 2000
     | WaitingForTargetFolder (source, _), FolderPathValidated (Ok path) -> Processing (source, path, [], []), DoNothing
 
-    | Processing (source, _, [], []), Start -> model, GetAllSourceFileNames source
-    | Processing (source, _, [], []), SourceFileNamesReceived [] -> FinishedProcessing (NoFilesDetected source), DoNothing
-    | Processing (source, target, [], []), SourceFileNamesReceived (firstToProcess::others)
-        -> Processing (source, target, (firstToProcess::others), []), ProcessImage firstToProcess
+    | Processing (_, target, [], []), Start -> model, CreateFoldersForEachTargetSize target
+    | Processing (source, _, [], []), TargetFoldersCreated -> model, GetAllSourceFileNames source
+    | Processing (source, _, [], []), SourceFilenamesReceived [] -> FinishedProcessing (NoFilesDetected source), DoNothing
+    | Processing (source, target, [], []), SourceFilenamesReceived (firstToProcess::others) ->
+        Processing (source, target, (firstToProcess::others), []), ProcessImage (source, target, firstToProcess)
+    | Processing (source, target, finished::next::others, processed), ImageProcessed ->
+        Processing (source, target, next::others, finished::processed), ProcessImage (source, target, next)
+    | Processing (source, target, _::[], _), ImageProcessed -> FinishedProcessing (FinishedSuccessfully (source, target)), DoNothing
 
     | FinishedProcessing _, Start -> model, ReadInput
     | FinishedProcessing _, InputReceived _ -> Exit, DoNothing
