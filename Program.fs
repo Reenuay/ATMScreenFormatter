@@ -95,7 +95,6 @@ module Command =
                 return
                     Directory.GetFiles(folderPath, "*.jpg")
                     |> Array.toList
-                    |> List.filter (fun f -> ImageProcessing.getFileDimensions f = (1024, 768))
                     |> List.map Path.GetFileName
                     |> SourceFilenamesReceived
 

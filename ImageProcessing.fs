@@ -47,7 +47,3 @@ let processImage targetWidth targetHeight (sourceFilename: string) (targetFilena
     )
 
     targetImage.Save(targetFilename)
-
-let getFileDimensions (filename: string) =
-    let size = Image.Identify(filename).Size
-    size.Width, size.Height
