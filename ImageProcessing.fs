@@ -30,6 +30,8 @@ let processImage targetWidth targetHeight (sourceFilename: string) (targetFilena
 
     let newLogoWidth = int (float logoWidth * scale)
     let newLogoHeight = int (float logoHeight * scale)
+    let newLogoWidth = if newLogoWidth > 0 then newLogoWidth else logoWidth
+    let newLogoHeight = if newLogoHeight > 0 then newLogoHeight else logoHeight
 
     sourceImage.Mutate(fun x ->
         x.Resize(targetWidth, sourceImage.Size.Height) |> ignore
